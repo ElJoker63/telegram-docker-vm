@@ -42,6 +42,24 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
     *   Edit `.env` and fill in your details:
         *   `TELEGRAM_BOT_TOKEN`: Get this from @BotFather on Telegram.
         *   `ADMIN_USER_ID`: Your Telegram User ID (get it from @userinfobot).
+        *   `CLOUDFLARE_TOKEN` (Optional but recommended): Cloudflare API token for reliable web terminals.
+        *   `CLOUDFLARE_ACCOUNT_ID` (Optional): Your Cloudflare account ID.
+
+### Cloudflare Setup (Recommended for Web Terminals)
+
+For best web terminal reliability, set up Cloudflare authentication:
+
+1. Go to [Cloudflare Dashboard](https://dash.cloudflare.com/profile/api-tokens)
+2. Create a new API token with "Cloudflare Tunnel" permissions
+3. Get your Account ID from the Cloudflare dashboard (found in the right sidebar)
+4. Add these to your `.env` file:
+
+```env
+CLOUDFLARE_TOKEN=your_api_token_here
+CLOUDFLARE_ACCOUNT_ID=your_account_id_here
+```
+
+**Note**: Web terminals will work without Cloudflare authentication, but authenticated tunnels are more reliable and have fewer limitations.
 
 4.  **Set Up User Authorization** (Optional but Recommended):
     *   By default, only the admin user can access the bot.
@@ -91,6 +109,12 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
 
 *   **GPU Error**: If `/create` fails with GPU enabled, ensure your Docker Desktop supports GPU and the NVIDIA Container Toolkit is installed. You can disable GPU via `/config_gpu off`.
 *   **Connection Refused**: Ensure the bot is running and the container status is `UP`.
-*   **Web Terminal Not Working**: The web terminal uses Cloudflare Tunnel to provide secure access without exposing ports. If it fails, check that the container has internet access and that `ttyd` and `cloudflared` are properly installed. The tunnel may take up to 45 seconds to establish.
+*   **Web Terminal Not Working**: The web terminal uses Cloudflare Tunnel to provide secure access without exposing ports. If it fails:
+  * Check that the container has internet access
+  * Verify `ttyd` and `cloudflared` are installed (`/web_terminal` will show installation status)
+  * The tunnel may take up to 60 seconds to establish
+  * If using Cloudflare authentication, ensure your `CLOUDFLARE_TOKEN` is valid
+  * Check container logs for specific error messages
+  * Try restarting the tunnel with `/web_terminal` command
 *   **Docker Connection Error**: If you see `Not supported URL scheme http+docker`, it means you have a dependency conflict. We have updated `requirements.txt` to use the latest Docker SDK which fixes this. **Please run `pip install -r requirements.txt --upgrade` to apply the fix.**
 *   **Image Build Issues**: If you encounter issues with the VM image, try rebuilding it manually: `docker build -f Dockerfile.vm -t telegram-vm-user:latest .`

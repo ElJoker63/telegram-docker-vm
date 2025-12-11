@@ -49,9 +49,14 @@ RUN wget -O /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/downloa
     && chmod +x /usr/local/bin/ttyd
 
 # Install Cloudflare Tunnel (cloudflared)
-RUN wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-    && dpkg -i cloudflared-linux-amd64.deb \
-    && rm cloudflared-linux-amd64.deb
+RUN wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+    && chmod +x cloudflared \
+    && mv cloudflared /usr/local/bin/cloudflared
+
+# Create directory for web terminal tools that can be copied to user containers
+RUN mkdir -p /opt/web-terminal-tools \
+    && cp /usr/local/bin/ttyd /opt/web-terminal-tools/ \
+    && cp /usr/local/bin/cloudflared /opt/web-terminal-tools/
 
 # Configure SSH
 RUN mkdir /var/run/sshd
