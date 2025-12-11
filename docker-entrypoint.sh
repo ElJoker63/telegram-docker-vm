@@ -3,10 +3,15 @@
 # Set up environment for rootless Docker
 export XDG_RUNTIME_DIR=/run/user/1000
 export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/docker.sock
+export PATH=$PATH:/usr/bin
 
-# Start Docker rootless daemon in the background
+# Create runtime directory if it doesn't exist
+mkdir -p ${XDG_RUNTIME_DIR}
+chown devuser:devuser ${XDG_RUNTIME_DIR}
+
+# Start Docker rootless daemon using the correct command
 echo "Starting Docker rootless daemon..."
-/usr/bin/dockerd-rootless.sh --experimental --storage-driver=vfs &
+/usr/bin/dockerd --experimental --storage-driver=vfs --userland-proxy=false &
 
 # Wait for Docker to be ready
 echo "Waiting for Docker to initialize..."
