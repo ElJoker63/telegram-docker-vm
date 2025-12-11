@@ -201,52 +201,25 @@ async def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
             else:
                 logger.info("ttyd installed from repository")
 
-            # Install cloudflared directly via apt (repository is pre-configured in image)
-            logger.info("Installing cloudflared...")
-            cloudflared_installed = False
-            try:
-                # Execute commands separately to avoid shell interpretation issues
-                commands = [
-                    ("apt-get update", "Updating package lists"),
-                    ("apt-get install -y cloudflared", "Installing cloudflared")
-                ]
-
-                for cmd, description in commands:
-                    logger.info(f"{description}...")
-                    exit_code, output = container.exec_run(cmd, user='root')
-                    if exit_code != 0:
-                        logger.warning(f"{description} failed: {safe_decode(output)}")
-                        break
-                else:
+            # Check if cloudflared is already available (pre-installed in Docker image)
+            logger.info("Checking cloudflared availability...")
+            exit_code, output = container.exec_run("which cloudflared", user='root')
+            if exit_code == 0:
+                logger.info("cloudflared is already available in container")
+            else:
+                logger.warning("cloudflared not found, attempting installation...")
+                # Try to install if not available
+                exit_code2, output2 = container.exec_run("apt-get update && apt-get install -y cloudflared", user='root')
+                if exit_code2 == 0:
                     logger.info("cloudflared installed successfully via apt")
-                    cloudflared_installed = True
-
-                if not cloudflared_installed:
-                    logger.warning("apt installation failed, trying direct download...")
-                    # Try direct download as fallback
-                    wget_cmd = "sh -c 'wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared'"
-                    exit_code, output = container.exec_run(wget_cmd, user='root')
-                    if exit_code == 0:
-                        logger.info("cloudflared installed successfully via direct download")
-                        cloudflared_installed = True
-                    else:
-                        logger.warning(f"Direct download failed: {safe_decode(output)}")
-
-                if not cloudflared_installed:
-                    # Create dummy script as last resort
+                else:
+                    logger.warning(f"apt installation failed: {safe_decode(output2)}")
+                    # Create dummy script as fallback
                     container.exec_run(
                         'mkdir -p /usr/local/bin && echo "#!/bin/bash\necho \"Web terminal not available: cloudflared could not be installed\"\nexit 1" > /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared',
                         user='root'
                     )
                     logger.warning("Created dummy cloudflared script")
-
-            except Exception as e:
-                logger.warning(f"Cloudflared installation failed: {str(e)}")
-                # Create dummy script
-                container.exec_run(
-                    'mkdir -p /usr/local/bin && echo "#!/bin/bash\necho \"Web terminal not available: cloudflared could not be installed\"\nexit 1" > /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared',
-                    user='root'
-                )
 
             # Verify installations
             exit_code, output = container.exec_run("which ttyd", user='root')
@@ -360,8 +333,24 @@ async def start_web_ssh_tunnel(container_id):
             cmd = "nohup ttyd -p 7681 --writable bash > /tmp/ttyd.log 2>&1 &"
             container.exec_run(f"sh -c '{cmd}'", detach=True, user='root')
             logger.info("Started ttyd on port 7681")
+            # Give ttyd a moment to start
+            await asyncio.sleep(2)
+            # Verify ttyd is running
+            exit_code, _ = container.exec_run("pgrep ttyd", user='root')
+            if exit_code == 0:
+                logger.info("ttyd is running successfully")
+            else:
+                logger.warning("ttyd failed to start")
+        else:
+            logger.info("ttyd is already running")
 
-        # 2. Start Cloudflare Tunnel
+        # 2. Check internet connectivity
+        logger.info("Checking internet connectivity...")
+        exit_code, _ = container.exec_run("ping -c 1 8.8.8.8", user='root')
+        if exit_code != 0:
+            return "Web terminal not available: No internet connectivity in container"
+
+        # 3. Start Cloudflare Tunnel
         # Kill existing tunnel if any
         container.exec_run("pkill -f cloudflared", user='root')
         await asyncio.sleep(1)  # Wait for process to terminate
@@ -381,25 +370,32 @@ async def start_web_ssh_tunnel(container_id):
             await asyncio.sleep(1)
             try:
                 exit_code, output = container.exec_run("cat /tmp/cloudflared.log 2>/dev/null || echo 'no log yet'", user='root')
-                log = output.decode('utf-8')
+                log = safe_decode(output)
+                if log and log != 'no log yet' and i % 10 == 0:  # Log every 10 seconds
+                    logger.info(f"Cloudflared log status (attempt {i+1}): {log[-200:]}")
 
-                # Updated regex to handle different Cloudflare tunnel URL formats
-                match = re.search(r'(https://[\w.-]+\.(trycloudflare\.com|cfargotunnel\.com|cloudflare\.com))', log)
-                if not match:
-                    # Try alternative URL patterns for authenticated tunnels
-                    match = re.search(r'(https://[^\s]+\.cloudflare\.com)', log)
-                if not match:
-                    # Last resort - any https URL
-                    match = re.search(r'(https://[^\s]+)', log)
+                # Look for Cloudflare tunnel URLs in the log
+                # Common patterns: trycloudflare.com, *.cloudflare.com, etc.
+                url_patterns = [
+                    r'https://[a-zA-Z0-9.-]+\.trycloudflare\.com',
+                    r'https://[a-zA-Z0-9.-]+\.cfargotunnel\.com',
+                    r'https://[a-zA-Z0-9.-]+\.cloudflare\.com',
+                    r'https://[a-zA-Z0-9.-]+\.cloudflaretunnel\.com'
+                ]
 
-                if match:
-                    url = match.group(1)
-                    # Validate the URL format
-                    if url.startswith('https://') and 'cloudflare' in url.lower():
+                for pattern in url_patterns:
+                    match = re.search(pattern, log)
+                    if match:
+                        url = match.group(0)
                         logger.info(f"Cloudflare tunnel URL obtained: {url}")
                         return url
-                    else:
-                        logger.warning(f"Invalid Cloudflare URL format detected: {url}")
+
+                # If no specific pattern matches, look for any https URL that might be the tunnel
+                match = re.search(r'https://[^\s]+\.com', log)
+                if match:
+                    url = match.group(0)
+                    logger.info(f"Found potential tunnel URL: {url}")
+                    return url
 
                 # Check for errors in the log
                 if "failed" in log.lower() or "error" in log.lower():
