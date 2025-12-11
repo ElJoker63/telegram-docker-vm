@@ -43,4 +43,5 @@ RUN echo 'devuser:password' | chpasswd
 
 EXPOSE 22
 
-CMD ["python3", "-m src"]
+#CMD ["/usr/sbin/sshd", "-D"]
+CMD ["python3 -m src"]
