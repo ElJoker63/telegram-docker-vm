@@ -23,4 +23,10 @@ fi
 
 echo "Starting Telegram bot..."
 cd /app
-python3 src/bot.py
+
+# Change to a non-root user for security
+if id "devuser" &>/dev/null; then
+    exec gosu devuser python3 src/bot.py
+else
+    exec python3 src/bot.py
+fi

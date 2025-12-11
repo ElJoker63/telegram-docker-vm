@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-venv \
     docker.io \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ttyd (Web Terminal)
@@ -61,4 +62,5 @@ COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Correct CMD to run both Docker and the bot
+USER root
 CMD ["docker-entrypoint.sh"]
