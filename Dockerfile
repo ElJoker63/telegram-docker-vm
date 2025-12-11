@@ -1,10 +1,10 @@
-FROM ubuntu:22.04
+FROM docker:dind
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Madrid
 
-# Install SSH server and basic tools
+# Install additional tools needed
 RUN apt-get update && apt-get install -y \
     openssh-server \
     sudo \
@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y \
     python3-full \
     python3-pip \
     python3-venv \
-    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ttyd (Web Terminal)
@@ -56,5 +55,9 @@ RUN pip3 install -r requirements.txt
 # Create data directory for database
 RUN mkdir -p /app/data
 
-# Correct CMD to run the bot
-CMD ["python3", "src/bot.py"]
+# Configure Docker to start automatically
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Correct CMD to run both Docker and the bot
+CMD ["docker-entrypoint.sh"]
