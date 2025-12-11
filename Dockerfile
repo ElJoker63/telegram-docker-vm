@@ -30,10 +30,18 @@ RUN apt-get update && apt-get install -y \
 RUN useradd -rm -d /home/devuser -s /bin/bash -g root -G sudo -u 1000 devuser && \
     echo 'devuser:password' | chpasswd
 
+# Install additional dependencies for Docker rootless
+RUN apt-get update && apt-get install -y \
+    dbus-user-session \
+    fuse-overlayfs \
+    slirp4netns \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set up Docker rootless for devuser
 USER devuser
 WORKDIR /home/devuser
-RUN dockerd-rootless-setuptool.sh
+RUN mkdir -p ~/.docker && \
+    echo '{"experimental": true}' > ~/.docker/config.json
 USER root
 
 # Install ttyd (Web Terminal)
