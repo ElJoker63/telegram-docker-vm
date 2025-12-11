@@ -9,9 +9,9 @@ export PATH=$PATH:/usr/bin
 mkdir -p ${XDG_RUNTIME_DIR}
 chown devuser:devuser ${XDG_RUNTIME_DIR}
 
-# Start Docker rootless daemon with proper configuration for Coolify
+# Start Docker rootless daemon with minimal configuration for Coolify
 echo "Starting Docker rootless daemon..."
-/usr/bin/dockerd --experimental --storage-driver=vfs --userland-proxy=false --iptables=false --ip-masq=false &
+/usr/bin/dockerd --experimental --storage-driver=vfs --userland-proxy=false --iptables=false --ip-masq=false --bridge=none --ipv6=false &
 
 # Wait for Docker to be ready
 echo "Waiting for Docker to initialize..."
