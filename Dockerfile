@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y \
     python3-full \
     python3-pip \
     python3-venv \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ttyd (Web Terminal)
