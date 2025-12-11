@@ -48,10 +48,11 @@ USER root
 RUN wget -O /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
     && chmod +x /usr/local/bin/ttyd
 
-# Install Cloudflare Tunnel (cloudflared) - Pre-install during build
-RUN apt-get update && apt-get install -y curl lsb-release \
+# Install Cloudflare Tunnel (cloudflared) - Pre-install during build following official instructions
+RUN apt-get update && apt-get install -y curl \
+    && mkdir -p --mode=0755 /usr/share/keyrings \
     && curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null \
-    && echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflared.list \
+    && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main' | tee /etc/apt/sources.list.d/cloudflared.list \
     && apt-get update && apt-get install -y cloudflared \
     && rm -rf /var/lib/apt/lists/*
 
