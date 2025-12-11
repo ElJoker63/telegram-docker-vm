@@ -1,10 +1,10 @@
-FROM docker:24.0.7-dind-rootless
+FROM ubuntu:22.04
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Madrid
 
-# Install additional tools needed (rootless Docker already includes docker)
+# Install Docker and additional tools needed
 RUN apt-get update && apt-get install -y \
     openssh-server \
     sudo \
@@ -21,8 +21,20 @@ RUN apt-get update && apt-get install -y \
     python3-full \
     python3-pip \
     python3-venv \
+    docker.io \
+    uidmap \
     gosu \
     && rm -rf /var/lib/apt/lists/*
+
+# Configure Docker rootless
+RUN useradd -rm -d /home/devuser -s /bin/bash -g root -G sudo -u 1000 devuser && \
+    echo 'devuser:password' | chpasswd
+
+# Set up Docker rootless for devuser
+USER devuser
+WORKDIR /home/devuser
+RUN dockerd-rootless-setuptool.sh
+USER root
 
 # Install ttyd (Web Terminal)
 RUN wget -O /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \

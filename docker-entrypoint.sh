@@ -1,8 +1,12 @@
 #!/bin/bash
 
+# Set up environment for rootless Docker
+export XDG_RUNTIME_DIR=/run/user/1000
+export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/docker.sock
+
 # Start Docker rootless daemon in the background
 echo "Starting Docker rootless daemon..."
-/usr/local/bin/dockerd-rootless.sh --experimental --storage-driver=vfs &
+/usr/bin/dockerd-rootless.sh --experimental --storage-driver=vfs &
 
 # Wait for Docker to be ready
 echo "Waiting for Docker to initialize..."
@@ -11,10 +15,6 @@ while ! docker info > /dev/null 2>&1; do
 done
 
 echo "Docker is ready!"
-
-# Set Docker environment variables for rootless
-export DOCKER_HOST=unix:///run/user/1000/docker.sock
-export XDG_RUNTIME_DIR=/run/user/1000
 
 # Build the VM image if it doesn't exist
 echo "Building VM image..."
