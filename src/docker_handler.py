@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 
 logger.info(f"Docker Python SDK Version: {docker.__version__}")
 
+def safe_decode(output):
+    """Safely decode container output, handling encoding errors."""
+    if isinstance(output, bytes):
+        try:
+            return output.decode('utf-8')
+        except UnicodeDecodeError:
+            return output.decode('utf-8', errors='ignore')
+    return str(output)
+
 try:
     client = docker.from_env()
     client.ping() # Verify connection
@@ -103,9 +112,30 @@ async def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
                 container.reload()
                 if container.status == 'running':
                     # Set the password inside the container
-                    exit_code, output = container.exec_run(f"sh -c 'echo devuser:{password} | chpasswd'", user='root')
-                    if exit_code != 0:
-                        logger.error(f"Failed to set password: {output}")
+                    # Try using python inside container to generate hash
+                    try:
+                        # Generate encrypted password using python in container
+                        python_cmd = f"python3 -c \"import crypt; print(crypt.crypt('{password}', crypt.mksalt(crypt.METHOD_SHA512)))\""
+                        exit_code, hash_output = container.exec_run(python_cmd, user='root')
+                        if exit_code == 0:
+                            encrypted_pass = hash_output.decode().strip()
+                            # Use usermod to set the password hash
+                            usermod_cmd = f"usermod -p '{encrypted_pass}' devuser"
+                            exit_code2, output2 = container.exec_run(usermod_cmd, user='root')
+                            if exit_code2 == 0:
+                                logger.info("Password set successfully using usermod")
+                            else:
+                                logger.warning(f"usermod failed: {safe_decode(output2)}")
+                                raise Exception("usermod failed")
+                        else:
+                            logger.warning(f"Python crypt failed: {safe_decode(hash_output)}")
+                            raise Exception("python crypt failed")
+                    except Exception as e:
+                        # Fallback to simpler method - just set a known password
+                        logger.warning(f"Advanced password methods failed ({e}), using simple password")
+                        simple_cmd = f"sh -c 'echo \"devuser:{password}\" | chpasswd 2>/dev/null || echo \"Password setting failed but continuing\"'"
+                        container.exec_run(simple_cmd, user='root')
+                        logger.info("Attempted simple password setting (may or may not work due to PAM restrictions)")
                     break
                 else:
                     await asyncio.sleep(1)
@@ -170,42 +200,34 @@ async def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
             else:
                 logger.info("ttyd installed from repository")
 
-            # Install cloudflared
+            # Install cloudflared - Copy from pre-installed location
             logger.info("Installing cloudflared...")
-            # Try different download sources with updated approach
-            exit_code, output = container.exec_run(
-                "curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null && "
-                "echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main' | tee /etc/apt/sources.list.d/cloudflared.list && "
-                "apt-get update && apt-get install -y cloudflared",
-                user='root'
-            )
-            if exit_code == 0:
-                logger.info("cloudflared installed successfully via official repository")
-            else:
-                logger.warning(f"cloudflared official repo installation failed: {output.decode()}")
-                # Try direct download with latest version
-                exit_code, output = container.exec_run(
-                    "curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared",
-                    user='root'
-                )
+            try:
+                # Copy cloudflared from the pre-installed location
+                exit_code, output = container.exec_run("cp /opt/web-terminal-tools/cloudflared /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared", user='root')
                 if exit_code == 0:
-                    logger.info("cloudflared installed successfully (latest version)")
+                    logger.info("cloudflared installed successfully from pre-built image")
                 else:
-                    logger.warning(f"cloudflared latest version installation failed: {output.decode()}")
-                    # Try snap if available
-                    exit_code, output = container.exec_run("snap install cloudflared", user='root')
-                    if exit_code == 0:
-                        logger.info("cloudflared installed successfully (using snap)")
-                        # Create symlink
-                        container.exec_run("ln -sf /snap/bin/cloudflared /usr/local/bin/cloudflared", user='root')
+                    logger.warning(f"Failed to copy cloudflared: {safe_decode(output)}")
+                    # Fallback: try to install via apt if copy fails
+                    exit_code2, output2 = container.exec_run("apt-get update && apt-get install -y cloudflared", user='root')
+                    if exit_code2 == 0:
+                        logger.info("cloudflared installed successfully via apt")
                     else:
-                        logger.warning(f"cloudflared snap installation also failed: {output.decode()}")
-                        # Create a dummy script as last resort
+                        logger.warning(f"apt installation also failed: {safe_decode(output2)}")
+                        # Create dummy script as last resort
                         container.exec_run(
                             'echo "#!/bin/bash\necho \"Web terminal not available: cloudflared could not be installed\"\nexit 1" > /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared',
                             user='root'
                         )
                         logger.warning("Created dummy cloudflared script")
+            except Exception as e:
+                logger.warning(f"Cloudflared installation failed: {str(e)}")
+                # Create dummy script
+                container.exec_run(
+                    'echo "#!/bin/bash\necho \"Web terminal not available: cloudflared could not be installed\"\nexit 1" > /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared',
+                    user='root'
+                )
 
             # Verify installations
             exit_code, output = container.exec_run("which ttyd", user='root')
@@ -222,7 +244,7 @@ async def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
 
             logger.info("Web terminal tools installation completed")
         except Exception as e:
-            logger.warning(f"Failed to install web terminal tools: {e}")
+            logger.warning(f"Failed to install web terminal tools: {str(e)}")
             # Continue anyway - web terminal won't work but SSH will
 
         # Get assigned port
@@ -327,9 +349,9 @@ async def start_web_ssh_tunnel(container_id):
 
         # Start new tunnel pointing to ttyd (http://localhost:7681)
         # Use cloudflared with proper authentication and error handling
-        if CLOUDFLARE_TOKEN and CLOUDFLARE_ACCOUNT_ID:
+        if CLOUDFLARE_TOKEN:
             # Use authenticated tunnel for better reliability
-            cmd = f"nohup cloudflared tunnel --url http://localhost:7681 --no-autoupdate run --token {CLOUDFLARE_TOKEN} > /tmp/cloudflared.log 2>&1 &"
+            cmd = f"nohup cloudflared tunnel --url http://localhost:7681 --no-autoupdate --token {CLOUDFLARE_TOKEN} > /tmp/cloudflared.log 2>&1 &"
             logger.info("Starting authenticated Cloudflare tunnel")
         else:
             # Use unauthenticated tunnel (may have limitations)
@@ -349,15 +371,18 @@ async def start_web_ssh_tunnel(container_id):
                 log = output.decode('utf-8')
 
                 # Updated regex to handle different Cloudflare tunnel URL formats
-                match = re.search(r'(https://[\w.-]+\.(trycloudflare\.com|cfargotunnel\.com))', log)
+                match = re.search(r'(https://[\w.-]+\.(trycloudflare\.com|cfargotunnel\.com|cloudflare\.com))', log)
                 if not match:
-                    # Try alternative URL patterns
+                    # Try alternative URL patterns for authenticated tunnels
+                    match = re.search(r'(https://[^\s]+\.cloudflare\.com)', log)
+                if not match:
+                    # Last resort - any https URL
                     match = re.search(r'(https://[^\s]+)', log)
 
                 if match:
                     url = match.group(1)
                     # Validate the URL format
-                    if url.startswith('https://') and ('.trycloudflare.com' in url or '.cfargotunnel.com' in url):
+                    if url.startswith('https://') and 'cloudflare' in url.lower():
                         logger.info(f"Cloudflare tunnel URL obtained: {url}")
                         return url
                     else:

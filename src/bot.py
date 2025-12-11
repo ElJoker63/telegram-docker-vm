@@ -55,6 +55,25 @@ def authorized_only(func):
 
 # --- User Commands ---
 
+@authorized_only
+async def list_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    plans = await db.get_vm_plans()
+
+    if not plans:
+        await update.message.reply_text("❌ No VM plans available.")
+        return
+
+    msg = "📋 **Available VM Plans**\n\n"
+    for plan in plans:
+        msg += f"**{plan['id']}. {plan['name']}**\n"
+        msg += f"   💾 RAM: {plan['ram']}\n"
+        msg += f"   🖥️ CPU: {plan['cpu']} cores\n"
+        msg += f"   💿 Disk: {plan['disk']}\n"
+        msg += f"   📝 {plan['description']}\n\n"
+
+    msg += "Admins assign plans using `/allow_user`. Users create VMs with `/create`."
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -71,7 +90,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to the Docker VM Manager!\n\n"
         "Commands:\n"
-        "/create - Create a new VM\n"
+        "/plans - View available VM plans\n"
+        "/create - Create a new VM with your assigned plan\n"
         "/status - Check VM status\n"
         "/start_vm - Start your VM\n"
         "/stop - Stop your VM\n"
@@ -83,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @authorized_only
 async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
+
     # Check maintenance mode
     settings = await db.get_settings()
     if not settings:
@@ -100,15 +120,22 @@ async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ You already have a VM (ID: {existing['container_id']}). Use /destroy first if you want a new one.")
         return
 
-    await update.message.reply_text("⏳ Provisioning your VM... This may take a moment.")
+    # Get user's assigned plan
+    user_plan_id = await db.get_user_plan(user_id)
+    plan = await db.get_vm_plan(user_plan_id)
+    if not plan:
+        await update.message.reply_text("❌ Your assigned plan is not available. Contact administrator.")
+        return
+
+    await update.message.reply_text(f"⏳ Provisioning your VM with plan **{plan['name']}**... This may take a moment.")
 
     try:
         # Create container (now async to avoid blocking)
         result = await docker.create_container(
             user_id=user_id,
             gpu_enabled=settings['gpu_enabled'],
-            ram_limit=settings['default_ram'],
-            cpu_limit=settings['default_cpu']
+            ram_limit=plan['ram'],
+            cpu_limit=plan['cpu']
         )
 
         # Register in DB
@@ -116,7 +143,8 @@ async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=user_id,
             container_id=result['container_id'],
             container_name=result['container_name'],
-            ssh_port=result['ssh_port']
+            ssh_port=result['ssh_port'],
+            plan_id=plan['id']
         )
 
         # Start Web SSH Tunnel
@@ -126,9 +154,10 @@ async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "✅ **VM Created Successfully!**\n\n"
             f"🆔 Container ID: `{result['container_id'][:12]}`\n"
+            f"📋 Plan: **{plan['name']}** ({plan['description']})\n"
             f"👤 User: `devuser`\n"
             f"🔑 Password: `{result['password']}`\n"
-            f"🖥️ Resources: {settings['default_ram']} RAM, {settings['default_cpu']} CPU, GPU: {'ON' if settings['gpu_enabled'] else 'OFF'}\n\n"
+            f"🖥️ Resources: {plan['ram']} RAM, {plan['cpu']} CPU, GPU: {'ON' if settings['gpu_enabled'] else 'OFF'}\n\n"
             "**🖥️ Access Web Terminal:**\n"
             f"[Click here to open terminal]({web_ssh_url})"
         )
@@ -174,6 +203,13 @@ async def status_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if status != container_data['status']:
         await db.update_container_status(user_id, status)
 
+    # Get plan information
+    plan_info = ""
+    if 'plan_id' in container_data and container_data['plan_id']:
+        plan = await db.get_vm_plan(container_data['plan_id'])
+        if plan:
+            plan_info = f"Plan: **{plan['name']}** ({plan['description']})\n"
+
     stats_msg = ""
     if status == "RUNNING":
         stats = await loop.run_in_executor(None, docker.get_container_stats, container_data['container_id'])
@@ -186,6 +222,7 @@ async def status_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"📊 **VM Status**\n"
+        f"{plan_info}"
         f"Status: {status}\n"
         f"SSH Port: {container_data['ssh_port']}\n"
         f"Container ID: {container_data['container_id'][:12]}"
@@ -473,18 +510,26 @@ async def force_destroy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /allow_user [user_id] [username]")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("Usage: /allow_user [user_id] [plan_id] [username] (username is optional)")
         return
 
     try:
         user_id = int(context.args[0])
-        username = context.args[1] if len(context.args) > 1 else None
+        plan_id = int(context.args[1])
+        username = context.args[2] if len(context.args) > 2 else None
 
-        await db.add_allowed_user(user_id, username, update.effective_user.id)
-        await update.message.reply_text(f"✅ User {user_id} ({username or 'Unknown'}) has been added to the allowed users list.")
+        # Validate plan exists
+        plan = await db.get_vm_plan(plan_id)
+        if not plan:
+            await update.message.reply_text(f"❌ Plan {plan_id} does not exist. Use /plans to see available plans.")
+            return
+
+        await db.add_allowed_user(user_id, username, plan_id, update.effective_user.id)
+        username_display = username if username else "Unknown"
+        await update.message.reply_text(f"✅ User {user_id} ({username_display}) has been added to the allowed users list with Plan {plan_id} ({plan['name']}).")
     except ValueError:
-        await update.message.reply_text("❌ Invalid User ID. Must be a number.")
+        await update.message.reply_text("❌ Invalid User ID or Plan ID. Both must be numbers.")
 
 @admin_only
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -509,9 +554,11 @@ async def list_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📝 **Allowed Users:**\n\n"
     for user in allowed_users:
-        username = f"@{user['username']}" if user['username'] else "Unknown"
+        username = user['username'] if user['username'] else "Unknown"
+        plan = await db.get_vm_plan(user['plan_id'])
+        plan_name = plan['name'] if plan else f"Plan {user['plan_id']}"
         added_by = f"by admin {user['added_by']}" if user['added_by'] else ""
-        msg += f"• {user['user_id']} ({username}) {added_by}\n"
+        msg += f"• {user['user_id']} ({username}) - {plan_name} {added_by}\n"
 
     await update.message.reply_text(msg, parse_mode='Markdown')
 
@@ -547,7 +594,8 @@ if __name__ == '__main__':
     # Set bot commands for Telegram
     commands = [
         BotCommand("start", "Show welcome message and available commands"),
-        BotCommand("create", "Create a new VM"),
+        BotCommand("plans", "View available VM plans"),
+        BotCommand("create", "Create a new VM with your assigned plan"),
         BotCommand("status", "Check VM status"),
         BotCommand("start_vm", "Start your VM"),
         BotCommand("stop", "Stop your VM"),
@@ -560,7 +608,7 @@ if __name__ == '__main__':
         BotCommand("config_cpu", "Configure default CPU (Admin only)"),
         BotCommand("force_stop", "Force stop user VM (Admin only)"),
         BotCommand("maintenance", "Toggle maintenance mode (Admin only)"),
-        BotCommand("allow_user", "Add user to whitelist (Admin only)"),
+        BotCommand("allow_user", "Add user to whitelist with plan (Admin only)"),
         BotCommand("remove_user", "Remove user from whitelist (Admin only)"),
         BotCommand("list_allowed", "List allowed users (Admin only)"),
         BotCommand("force_destroy", "Force destroy user VM (Admin only)")
@@ -576,6 +624,7 @@ if __name__ == '__main__':
 
     # Handlers
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('plans', list_plans))
     application.add_handler(CommandHandler('create', create_vm))
     application.add_handler(CommandHandler('status', status_vm))
     application.add_handler(CommandHandler('stop', stop_vm))

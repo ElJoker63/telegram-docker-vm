@@ -5,6 +5,7 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
 ## Features
 
 *   **On-Demand VMs**: Users can create, start, stop, and destroy their own isolated Ubuntu environments.
+*   **Multiple VM Plans**: Choose from different resource configurations (Basic, Standard, Pro, Enterprise).
 *   **SSH Access**: Automatically generates credentials and exposes a port for SSH connection.
 *   **Dynamic Resource Management**: Admins can configure RAM, CPU, and GPU availability globally without restarting the bot.
 *   **GPU Passthrough**: Support for NVIDIA GPUs (requires NVIDIA Container Toolkit).
@@ -78,8 +79,9 @@ CLOUDFLARE_ACCOUNT_ID=your_account_id_here
 ## Usage
 
 ### User Commands
-*   `/create` - Provision a new VM based on current global settings.
-*   `/status` - View VM status, IP, SSH port, and credentials.
+*   `/plans` - View available VM plans with different resource configurations.
+*   `/create` - Provision a new VM with your assigned plan.
+*   `/status` - View VM status, plan details, SSH port, and credentials.
 *   `/start_vm` - Start a stopped VM.
 *   `/stop` - Stop the running VM to save resources.
 *   `/destroy` - Permanently delete the VM and data.
@@ -93,7 +95,7 @@ CLOUDFLARE_ACCOUNT_ID=your_account_id_here
 *   `/config_cpu [n]` - Set default CPU thread limit.
 *   `/force_stop [user_id]` - Forcefully stop a specific user's container.
 *   `/maintenance [on|off]` - Toggle maintenance mode. When ON, it stops all running VMs and prevents new ones from being created or started.
-*   `/allow_user [user_id] [username]` - Add a user to the allowed users list.
+*   `/allow_user [user_id] [plan_id] [username]` - Add a user to the allowed users list with a specific plan (username is optional).
 *   `/remove_user [user_id]` - Remove a user from the allowed users list.
 *   `/list_allowed` - List all users who are allowed to use the bot.
 

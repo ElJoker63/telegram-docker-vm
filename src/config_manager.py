@@ -41,19 +41,59 @@ async def init_db():
                 container_id TEXT,
                 container_name TEXT,
                 ssh_port INTEGER,
-                status TEXT
+                status TEXT,
+                plan_id INTEGER DEFAULT 1
             )
         """)
+
+        # Migration: Add plan_id column if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE containers ADD COLUMN plan_id INTEGER DEFAULT 1")
+        except Exception:
+            pass # Column likely already exists
 
         # Create allowed_users table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS allowed_users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
+                plan_id INTEGER DEFAULT 1,
                 added_by INTEGER,
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migration: Add plan_id column if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE allowed_users ADD COLUMN plan_id INTEGER DEFAULT 1")
+        except Exception:
+            pass # Column likely already exists
+
+        # Create vm_plans table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS vm_plans (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                ram TEXT,
+                cpu INTEGER,
+                disk TEXT,
+                description TEXT
+            )
+        """)
+
+        # Insert default plans if not exists
+        plans = [
+            (1, "Basic", "2g", 1, "100g", "2 GB RAM + 1 CPU + 100 GB"),
+            (2, "Standard", "4g", 2, "150g", "4 GB RAM + 2 CPU + 150 GB"),
+            (3, "Pro", "8g", 4, "250g", "8 GB RAM + 4 CPU + 250 GB"),
+            (4, "Enterprise", "16g", 4, "500g", "16 GB RAM + 4 CPU + 500 GB")
+        ]
+
+        for plan in plans:
+            await db.execute("""
+                INSERT OR IGNORE INTO vm_plans (id, name, ram, cpu, disk, description)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, plan)
 
         await db.commit()
     logger.info("Database initialized.")
@@ -76,13 +116,13 @@ async def update_setting(key, value):
         await db.execute(f"UPDATE settings SET {key} = ? WHERE id = 1", (value,))
         await db.commit()
 
-async def register_container(user_id, container_id, container_name, ssh_port, status="UP"):
+async def register_container(user_id, container_id, container_name, ssh_port, status="UP", plan_id=1):
     """Register a new container for a user."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT OR REPLACE INTO containers (user_id, container_id, container_name, ssh_port, status)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user_id, container_id, container_name, ssh_port, status))
+            INSERT OR REPLACE INTO containers (user_id, container_id, container_name, ssh_port, status, plan_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, container_id, container_name, ssh_port, status, plan_id))
         await db.commit()
 
 async def get_user_container(user_id):
@@ -115,13 +155,13 @@ async def get_all_containers():
 
 # --- Allowed Users Management ---
 
-async def add_allowed_user(user_id, username=None, added_by=None):
-    """Add a user to the allowed users list."""
+async def add_allowed_user(user_id, username=None, plan_id=1, added_by=None):
+    """Add a user to the allowed users list with a specific plan."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT OR REPLACE INTO allowed_users (user_id, username, added_by)
-            VALUES (?, ?, ?)
-        """, (user_id, username, added_by))
+            INSERT OR REPLACE INTO allowed_users (user_id, username, plan_id, added_by)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, username, plan_id, added_by))
         await db.commit()
 
 async def remove_allowed_user(user_id):
@@ -137,6 +177,14 @@ async def is_user_allowed(user_id):
             row = await cursor.fetchone()
             return row is not None
 
+async def get_user_plan(user_id):
+    """Get the plan assigned to a user."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT plan_id FROM allowed_users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row['plan_id'] if row else 1  # Default to plan 1 if not found
+
 async def get_allowed_users():
     """Get all allowed users."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -144,3 +192,21 @@ async def get_allowed_users():
         async with db.execute("SELECT * FROM allowed_users ORDER BY added_at DESC") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+# --- VM Plans Management ---
+
+async def get_vm_plans():
+    """Get all available VM plans."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM vm_plans ORDER BY id") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def get_vm_plan(plan_id):
+    """Get a specific VM plan by ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM vm_plans WHERE id = ?", (plan_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
