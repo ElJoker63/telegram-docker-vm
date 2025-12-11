@@ -5,6 +5,7 @@ import secrets
 import string
 import time
 import re
+import asyncio
 from docker.errors import DockerException, NotFound
 
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +42,7 @@ def generate_password(length=12):
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for i in range(length))
 
-def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
+async def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
     """Create and start a new container with specified resources."""
     if not client:
         raise Exception("Docker client not initialized")
@@ -102,17 +103,77 @@ def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
                         logger.error(f"Failed to set password: {output}")
                     break
                 else:
-                    time.sleep(1)
+                    await asyncio.sleep(1)
                     attempt += 1
             except Exception as e:
                 logger.warning(f"Container not ready yet, retrying... ({attempt}/{max_attempts}): {e}")
-                time.sleep(1)
+                await asyncio.sleep(1)
                 attempt += 1
 
         if attempt >= max_attempts:
             logger.error("Container failed to start within the expected time")
             container.remove(force=True)
             raise Exception("Container failed to start")
+
+        # Install web terminal tools (ttyd and cloudflared)
+        logger.info("Installing web terminal tools...")
+        try:
+            # Update package list and install basic tools
+            logger.info("Updating package list and installing basic tools...")
+            exit_code, output = container.exec_run("apt-get update && apt-get install -y wget curl", user='root')
+            if exit_code != 0:
+                logger.warning(f"Package update/installation failed: {output.decode()}")
+                # Try alternative approach
+                exit_code, output = container.exec_run("apt-get update --fix-missing && apt-get install -y wget curl", user='root')
+                if exit_code != 0:
+                    logger.warning(f"Alternative package installation also failed: {output.decode()}")
+
+            # Install ttyd from official repository if available, otherwise from binary
+            logger.info("Installing ttyd...")
+            # First try installing from Ubuntu repos
+            exit_code, output = container.exec_run("apt-get install -y ttyd", user='root')
+            if exit_code != 0:
+                logger.info("ttyd not available in repos, installing from binary...")
+                # Fallback to binary installation
+                exit_code, output = container.exec_run("wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd", user='root')
+                if exit_code != 0:
+                    logger.warning(f"ttyd binary installation failed: {output.decode()}")
+                else:
+                    logger.info("ttyd binary installed successfully")
+            else:
+                logger.info("ttyd installed from repository")
+
+            # Install cloudflared from binary (usually not in Ubuntu repos)
+            logger.info("Installing cloudflared...")
+            exit_code, output = container.exec_run("wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared", user='root')
+            if exit_code != 0:
+                logger.warning(f"cloudflared installation failed: {output.decode()}")
+                # Try alternative URL
+                exit_code, output = container.exec_run("wget -q https://github.com/cloudflare/cloudflared/releases/download/2024.10.1/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared", user='root')
+                if exit_code != 0:
+                    logger.warning(f"cloudflared alternative installation also failed: {output.decode()}")
+                else:
+                    logger.info("cloudflared installed successfully (alternative URL)")
+            else:
+                logger.info("cloudflared installed successfully")
+
+            # Verify installations
+            exit_code, output = container.exec_run("which ttyd", user='root')
+            if exit_code == 0:
+                logger.info("ttyd verification successful")
+            else:
+                logger.warning("ttyd verification failed")
+
+            exit_code, output = container.exec_run("which cloudflared", user='root')
+            if exit_code == 0:
+                logger.info("cloudflared verification successful")
+            else:
+                logger.warning("cloudflared verification failed")
+
+            logger.info("Web terminal tools installation completed")
+        except Exception as e:
+            logger.warning(f"Failed to install web terminal tools: {e}")
+            # Continue anyway - web terminal won't work but SSH will
 
         # Get assigned port
         container.reload()
@@ -186,50 +247,71 @@ def exec_command(container_id, command):
         logger.error(f"Exec error: {e}")
         return f"Error: {str(e)}"
 
-def start_web_ssh_tunnel(container_id):
+async def start_web_ssh_tunnel(container_id):
     """Start ttyd and Cloudflare Tunnel, returning the HTTPS URL."""
     if not client: return "Docker client not initialized"
     try:
         container = client.containers.get(container_id)
-        
+
+        # Check if required tools are installed
+        exit_code, _ = container.exec_run("which ttyd", user='root')
+        if exit_code != 0:
+            return "Web terminal not available: ttyd not installed in container"
+
+        exit_code, _ = container.exec_run("which cloudflared", user='root')
+        if exit_code != 0:
+            return "Web terminal not available: cloudflared not installed in container"
+
         # 1. Start ttyd (if not already running)
-        # -W: Check origin (security), but for quick tunnel we might need to relax it or set it correctly.
-        # For simplicity in this demo, we'll allow all origins or just run it.
         exit_code, _ = container.exec_run("pgrep ttyd", user='root')
         if exit_code != 0:
-             # Run ttyd on port 7681
-             # Using sh -c to handle redirection and backgrounding
-             cmd = "nohup ttyd -p 7681 -W bash > /tmp/ttyd.log 2>&1 &"
-             container.exec_run(f"sh -c '{cmd}'", detach=True, user='root')
-        
+            # Run ttyd on port 7681 without origin checking for tunnel usage
+            cmd = "nohup ttyd -p 7681 --writable bash > /tmp/ttyd.log 2>&1 &"
+            container.exec_run(f"sh -c '{cmd}'", detach=True, user='root')
+            logger.info("Started ttyd on port 7681")
+
         # 2. Start Cloudflare Tunnel
         # Kill existing tunnel if any
         container.exec_run("pkill -f cloudflared", user='root')
+        await asyncio.sleep(1)  # Wait for process to terminate
 
         # Start new tunnel pointing to ttyd (http://localhost:7681)
         cmd = "nohup cloudflared tunnel --url http://localhost:7681 > /tmp/cloudflared.log 2>&1 &"
         container.exec_run(f"sh -c '{cmd}'", detach=True, user='root')
-        
-        # Wait for URL
-        # Increased wait time to 30 seconds to allow cloudflared to register
+        logger.info("Started Cloudflare tunnel")
+
+        # Wait for URL - increased timeout and better error handling
         log = ""
-        for i in range(30):
-            time.sleep(1)
-            exit_code, output = container.exec_run("cat /tmp/cloudflared.log", user='root')
-            log = output.decode('utf-8')
-            
-            # Regex to find the URL: https://random-name.trycloudflare.com
-            match = re.search(r'(https://[\w.-]+\.trycloudflare\.com)', log)
-            
-            if match:
-                return match.group(1)
-        
-        # If failed, return the last few lines of the log for debugging
-        return f"Failed to retrieve Cloudflare URL. Log: {log[-1000:] if log else 'No log output'}"
-        
+        max_attempts = 45  # 45 seconds timeout
+        for i in range(max_attempts):
+            await asyncio.sleep(1)
+            try:
+                exit_code, output = container.exec_run("cat /tmp/cloudflared.log 2>/dev/null || echo 'no log yet'", user='root')
+                log = output.decode('utf-8')
+
+                # Regex to find the URL: https://random-name.trycloudflare.com
+                match = re.search(r'(https://[\w.-]+\.trycloudflare\.com)', log)
+
+                if match:
+                    url = match.group(1)
+                    logger.info(f"Cloudflare tunnel URL obtained: {url}")
+                    return url
+
+                # Check for errors in the log
+                if "failed" in log.lower() or "error" in log.lower():
+                    logger.warning(f"Cloudflared error detected: {log}")
+
+            except Exception as e:
+                logger.warning(f"Error reading cloudflared log: {e}")
+                continue
+
+        # If failed, return detailed error information
+        logger.error(f"Failed to get Cloudflare URL after {max_attempts} seconds")
+        return f"Failed to establish web terminal tunnel. Last log output: {log[-500:] if log else 'No log output'}"
+
     except Exception as e:
         logger.error(f"Web SSH tunnel error: {e}")
-        return f"Error: {str(e)}"
+        return f"Error establishing web terminal: {str(e)}"
 
 def get_container_stats(container_id):
     """Get real-time stats (RAM, CPU) for a container."""

@@ -88,7 +88,7 @@ if [ "$PYTHON_PACKAGES_INSTALLED" = true ]; then
     echo_color $GREEN "✅ Dependencias Python ya están instaladas"
 else
     echo_color $YELLOW "📦 Instalando dependencias Python..."
-    pip3 install --root-user-action=ignore -q python-telegram-bot docker python-dotenv
+    pip3 install --root-user-action=ignore --break-system-packages -q -r requirements.txt
     if [ $? -ne 0 ]; then
         echo_color $RED "❌ Falló la instalación de dependencias Python"
         exit 1
@@ -97,11 +97,24 @@ else
 fi
 echo_color $GREEN "📁 Accediendo al directorio del proyecto..."
 cd "$SCRIPT_DIR"
+echo_color $GREEN "📁 Creando directorio de datos..."
+mkdir -p data
+chmod 755 data
 
-echo_color $GREEN "🔧 Creando servicio systemd..."
-cat > /etc/systemd/system/telegram-vm-bot.service << EOF
+echo_color $GREEN "🔧 Gestionando servicios systemd..."
+if systemctl is-active --quiet telegram-vm-bot 2>/dev/null; then
+    echo_color $YELLOW "🛑 Deteniendo servicio anterior..."
+    systemctl stop telegram-vm-bot
+    systemctl disable telegram-vm-bot
+fi
+if [ -f "/etc/systemd/system/telegram-vm-bot.service" ]; then
+    echo_color $YELLOW "🗑️ Eliminando servicio anterior..."
+    rm -f /etc/systemd/system/telegram-vm-bot.service
+fi
+echo_color $GREEN "🔧 Creando nuevo servicio vm-bot..."
+cat > /etc/systemd/system/vm-bot.service << EOF
 [Unit]
-Description=Telegram VM Bot Service
+Description=VM Bot Service
 After=docker.service
 Requires=docker.service
 
@@ -116,10 +129,10 @@ WantedBy=multi-user.target
 EOF
 echo_color $GREEN "🚀 Iniciando servicio..."
 systemctl daemon-reload
-systemctl enable telegram-vm-bot
-systemctl start telegram-vm-bot
+systemctl enable vm-bot
+systemctl start vm-bot
 sleep 3
-STATUS=$(systemctl is-active telegram-vm-bot)
+STATUS=$(systemctl is-active vm-bot)
 if [ "$STATUS" = "active" ]; then
     echo_color $GREEN "✅ ¡Bot desplegado exitosamente!"
     echo_color $YELLOW "📊 Estado del servicio: $STATUS"
@@ -127,12 +140,12 @@ if [ "$STATUS" = "active" ]; then
 else
     echo_color $RED "❌ Error al iniciar el servicio"
     echo_color $YELLOW "📋 Revisa los logs con:"
-    echo_color $YELLOW "journalctl -u telegram-vm-bot -f"
+    echo_color $YELLOW "journalctl -u vm-bot -f"
 fi
 echo_color $GREEN "📋 Resumen de la instalación:"
 echo_color $YELLOW "📁 Directorio: $SCRIPT_DIR"
-echo_color $YELLOW "🔄 Servicio: telegram-vm-bot"
-echo_color $YELLOW "📊 Logs: journalctl -u telegram-vm-bot -f"
+echo_color $YELLOW "🔄 Servicio: vm-bot"
+echo_color $YELLOW "📊 Logs: journalctl -u vm-bot -f"
 echo_color $YELLOW "🚀 Comandos disponibles en Telegram:"
 echo_color $YELLOW "  /start - Menú principal"
 echo_color $YELLOW "  /create - Crear VM"
@@ -143,4 +156,3 @@ echo_color $YELLOW "  /exec <id> <cmd> - Ejecutar comando"
 echo_color $YELLOW "  /status <id> - Estado de VM"
 echo_color $GREEN "✅ ¡Instalación completada!"
 EOF
-<line_count>350</line_count>

@@ -1,6 +1,6 @@
 # Telegram Docker VM Manager
 
-A Telegram bot that orchestrates isolated Docker-based development environments (VMs) with SSH access. It allows users to provision containers on-demand and administrators to manage resources dynamically.
+A Telegram bot that orchestrates isolated Docker-based development environments (VMs) with secure SSH and web terminal access. It allows users to provision containers on-demand and administrators to manage resources dynamically, without exposing any ports externally.
 
 ## Features
 
@@ -8,6 +8,10 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
 *   **SSH Access**: Automatically generates credentials and exposes a port for SSH connection.
 *   **Dynamic Resource Management**: Admins can configure RAM, CPU, and GPU availability globally without restarting the bot.
 *   **GPU Passthrough**: Support for NVIDIA GPUs (requires NVIDIA Container Toolkit).
+*   **User Authorization**: Admin-controlled whitelist system to restrict bot access to approved users only.
+*   **Command Registration**: Bot automatically registers all available commands with Telegram for better user experience.
+*   **Asynchronous Operations**: All Docker operations are fully asynchronous to prevent blocking other users.
+*   **Secure Web Terminal**: Cloudflare Tunnel provides HTTPS access without exposing any ports externally.
 *   **Persistence**: User states and global configurations are saved in a SQLite database.
 
 ## Prerequisites
@@ -15,6 +19,7 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
 *   **Windows 11 (Host)** with WSL2 enabled.
 *   **Docker Desktop** configured with WSL2 backend.
 *   **Python 3.8+**
+*   **Internet connection** (for Cloudflare Tunnel - works without public IP)
 *   *(Optional)* NVIDIA GPU with drivers installed and NVIDIA Container Toolkit configured for Docker.
 
 ## Installation
@@ -38,12 +43,19 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
         *   `TELEGRAM_BOT_TOKEN`: Get this from @BotFather on Telegram.
         *   `ADMIN_USER_ID`: Your Telegram User ID (get it from @userinfobot).
 
-4.  **Run the Bot**:
+4.  **Set Up User Authorization** (Optional but Recommended):
+    *   By default, only the admin user can access the bot.
+    *   To allow other users, use the admin commands:
+        *   `/allow_user [user_id] [username]` - Add users to the whitelist.
+        *   `/list_allowed` - View currently allowed users.
+    *   Users not in the whitelist will receive an access denied message when trying to use any bot commands.
+
+5.  **Run the Bot**:
     Make sure you are in the project root directory.
     ```bash
     python src/bot.py
     ```
-    *The bot will automatically build the Docker image (`telegram-vm-bot:latest`) and initialize the database on the first run.*
+    *The bot will automatically build the Docker image (`telegram-vm-bot:latest` for the bot), initialize the database, and register all commands with Telegram on the first run.*
 
 ## Usage
 
@@ -54,7 +66,7 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
 *   `/stop` - Stop the running VM to save resources.
 *   `/destroy` - Permanently delete the VM and data.
 *   `/exec [command]` - Execute a shell command inside your VM and see the output (e.g., `/exec ls -la`).
-*   `/web_terminal` - Generate a temporary Pinggy.io link to access a full web-based terminal.
+*   `/web_terminal` - Generate a secure Cloudflare Tunnel link to access a full web-based terminal (no ports exposed).
 
 ### Admin Commands (Admin Only)
 *   `/admin_info` - View global config and list of active containers.
@@ -63,6 +75,9 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
 *   `/config_cpu [n]` - Set default CPU thread limit.
 *   `/force_stop [user_id]` - Forcefully stop a specific user's container.
 *   `/maintenance [on|off]` - Toggle maintenance mode. When ON, it stops all running VMs and prevents new ones from being created or started.
+*   `/allow_user [user_id] [username]` - Add a user to the allowed users list.
+*   `/remove_user [user_id]` - Remove a user from the allowed users list.
+*   `/list_allowed` - List all users who are allowed to use the bot.
 
 ## Project Structure
 
@@ -70,10 +85,12 @@ A Telegram bot that orchestrates isolated Docker-based development environments 
 *   `src/config_manager.py`: Database interactions (SQLite).
 *   `src/docker_handler.py`: Docker SDK wrapper for container management.
 *   `data/`: Stores the SQLite database (`bot_data.db`).
-*   `Dockerfile`: Template for the user VMs (Ubuntu + SSH).
+*   `Dockerfile`: Template for the bot container with Docker-in-Docker support.
 
 ## Troubleshooting
 
 *   **GPU Error**: If `/create` fails with GPU enabled, ensure your Docker Desktop supports GPU and the NVIDIA Container Toolkit is installed. You can disable GPU via `/config_gpu off`.
 *   **Connection Refused**: Ensure the bot is running and the container status is `UP`.
+*   **Web Terminal Not Working**: The web terminal uses Cloudflare Tunnel to provide secure access without exposing ports. If it fails, check that the container has internet access and that `ttyd` and `cloudflared` are properly installed. The tunnel may take up to 45 seconds to establish.
 *   **Docker Connection Error**: If you see `Not supported URL scheme http+docker`, it means you have a dependency conflict. We have updated `requirements.txt` to use the latest Docker SDK which fixes this. **Please run `pip install -r requirements.txt --upgrade` to apply the fix.**
+*   **Image Build Issues**: If you encounter issues with the VM image, try rebuilding it manually: `docker build -f Dockerfile.vm -t telegram-vm-user:latest .`

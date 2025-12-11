@@ -3,7 +3,7 @@ import logging
 import asyncio
 import urllib.request
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
 from functools import wraps
 
@@ -33,9 +33,41 @@ def admin_only(func):
         return await func(update, context, *args, **kwargs)
     return wrapper
 
+def authorized_only(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        # Admin is always authorized
+        if user_id == ADMIN_ID:
+            return await func(update, context, *args, **kwargs)
+
+        # Check if user is in allowed list
+        if not await db.is_user_allowed(user_id):
+            username = update.effective_user.username or "Unknown"
+            await update.message.reply_text(
+                f"⛔ Access denied.\n\n"
+                f"User @{username} (ID: {user_id}) is not authorized to use this bot.\n\n"
+                f"Please contact the administrator to request access."
+            )
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
 # --- User Commands ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    # Check if user is authorized (admin is always authorized)
+    if user_id != ADMIN_ID and not await db.is_user_allowed(user_id):
+        username = update.effective_user.username or "Unknown"
+        await update.message.reply_text(
+            f"⛔ Access denied.\n\n"
+            f"User @{username} (ID: {user_id}) is not authorized to use this bot.\n\n"
+            f"Please contact the administrator to request access."
+        )
+        return
+
     await update.message.reply_text(
         "👋 Welcome to the Docker VM Manager!\n\n"
         "Commands:\n"
@@ -48,6 +80,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/web_terminal - Get Web Terminal Link\n"
     )
 
+@authorized_only
 async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -70,16 +103,12 @@ async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Provisioning your VM... This may take a moment.")
 
     try:
-        # Create container (run in background thread to avoid blocking)
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: docker.create_container(
-                user_id=user_id,
-                gpu_enabled=settings['gpu_enabled'],
-                ram_limit=settings['default_ram'],
-                cpu_limit=settings['default_cpu']
-            )
+        # Create container (now async to avoid blocking)
+        result = await docker.create_container(
+            user_id=user_id,
+            gpu_enabled=settings['gpu_enabled'],
+            ram_limit=settings['default_ram'],
+            cpu_limit=settings['default_cpu']
         )
 
         # Register in DB
@@ -92,7 +121,7 @@ async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Start Web SSH Tunnel
         await update.message.reply_text("⏳ Establishing secure Web SSH tunnel...")
-        web_ssh_url = await loop.run_in_executor(None, docker.start_web_ssh_tunnel, result['container_id'])
+        web_ssh_url = await docker.start_web_ssh_tunnel(result['container_id'])
         
         msg = (
             "✅ **VM Created Successfully!**\n\n"
@@ -129,6 +158,7 @@ async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(f"❌ Failed to create VM: {str(e)}")
 
+@authorized_only
 async def status_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     container_data = await db.get_user_container(user_id)
@@ -162,6 +192,7 @@ async def status_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{stats_msg}"
     , parse_mode='Markdown')
 
+@authorized_only
 async def stop_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     container_data = await db.get_user_container(user_id)
@@ -179,6 +210,7 @@ async def stop_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Failed to stop VM.")
 
+@authorized_only
 async def start_vm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -202,7 +234,7 @@ async def start_vm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("▶️ VM started. Re-establishing Web SSH tunnel...")
         
         # Restart Web SSH Tunnel
-        web_ssh_url = await loop.run_in_executor(None, docker.start_web_ssh_tunnel, container_data['container_id'])
+        web_ssh_url = await docker.start_web_ssh_tunnel(container_data['container_id'])
         
         if "http" in web_ssh_url:
             await update.message.reply_text(f"🖥️ **Web Terminal Ready!**\n\n[Click here to open terminal]({web_ssh_url})", parse_mode='Markdown')
@@ -211,6 +243,7 @@ async def start_vm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Failed to start VM.")
 
+@authorized_only
 async def destroy_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     container_data = await db.get_user_container(user_id)
@@ -231,6 +264,7 @@ async def destroy_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Failed to destroy VM (it might already be gone). Removing from DB.")
         await db.delete_container(user_id)
 
+@authorized_only
 async def exec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
@@ -253,6 +287,7 @@ async def exec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"```\n{output}\n```", parse_mode='Markdown')
 
+@authorized_only
 async def web_terminal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     container_data = await db.get_user_container(user_id)
@@ -263,8 +298,7 @@ async def web_terminal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("⏳ Retrieving Web SSH link...")
 
-    loop = asyncio.get_running_loop()
-    url = await loop.run_in_executor(None, docker.start_web_ssh_tunnel, container_data['container_id'])
+    url = await docker.start_web_ssh_tunnel(container_data['container_id'])
     
     if "http" in url:
         await update.message.reply_text(f"🖥️ **Web Terminal Ready!**\n\n[Click here to open terminal]({url})", parse_mode='Markdown')
@@ -396,7 +430,7 @@ async def force_destroy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /force_destroy [user_id|all]")
         return
-    
+
     target = context.args[0]
     loop = asyncio.get_running_loop()
 
@@ -404,7 +438,7 @@ async def force_destroy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ **DESTROYING ALL VMs...** This cannot be undone.")
         containers = await db.get_all_containers()
         count = 0
-        
+
         for c in containers:
             success = await loop.run_in_executor(None, docker.remove_container, c['container_id'])
             if success:
@@ -414,7 +448,7 @@ async def force_destroy(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Even if docker remove fails (e.g. container gone), remove from DB
                 await db.delete_container(c['user_id'])
                 count += 1
-        
+
         await update.message.reply_text(f"✅ Destroyed {count} VMs.")
         return
 
@@ -424,18 +458,62 @@ async def force_destroy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not container_data:
             await update.message.reply_text("❌ User has no VM.")
             return
-            
+
         success = await loop.run_in_executor(None, docker.remove_container, container_data['container_id'])
-        
+
         if success:
             await db.delete_container(target_id)
             await update.message.reply_text(f"✅ Destroyed VM for user {target_id}.")
         else:
             await db.delete_container(target_id)
             await update.message.reply_text(f"⚠️ Container removal failed, but removed from DB for user {target_id}.")
-            
+
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID. Use a number or 'all'.")
+
+@admin_only
+async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /allow_user [user_id] [username]")
+        return
+
+    try:
+        user_id = int(context.args[0])
+        username = context.args[1] if len(context.args) > 1 else None
+
+        await db.add_allowed_user(user_id, username, update.effective_user.id)
+        await update.message.reply_text(f"✅ User {user_id} ({username or 'Unknown'}) has been added to the allowed users list.")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid User ID. Must be a number.")
+
+@admin_only
+async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /remove_user [user_id]")
+        return
+
+    try:
+        user_id = int(context.args[0])
+        await db.remove_allowed_user(user_id)
+        await update.message.reply_text(f"✅ User {user_id} has been removed from the allowed users list.")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid User ID. Must be a number.")
+
+@admin_only
+async def list_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    allowed_users = await db.get_allowed_users()
+
+    if not allowed_users:
+        await update.message.reply_text("📝 No users are currently allowed to use the bot.")
+        return
+
+    msg = "📝 **Allowed Users:**\n\n"
+    for user in allowed_users:
+        username = f"@{user['username']}" if user['username'] else "Unknown"
+        added_by = f"by admin {user['added_by']}" if user['added_by'] else ""
+        msg += f"• {user['user_id']} ({username}) {added_by}\n"
+
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 # --- Main ---
 
@@ -466,6 +544,36 @@ if __name__ == '__main__':
 
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # Set bot commands for Telegram
+    commands = [
+        BotCommand("start", "Show welcome message and available commands"),
+        BotCommand("create", "Create a new VM"),
+        BotCommand("status", "Check VM status"),
+        BotCommand("start_vm", "Start your VM"),
+        BotCommand("stop", "Stop your VM"),
+        BotCommand("destroy", "Delete your VM"),
+        BotCommand("exec", "Run command in VM"),
+        BotCommand("web_terminal", "Get Web Terminal Link"),
+        BotCommand("admin_info", "View system configuration (Admin only)"),
+        BotCommand("config_gpu", "Configure GPU support (Admin only)"),
+        BotCommand("config_ram", "Configure default RAM (Admin only)"),
+        BotCommand("config_cpu", "Configure default CPU (Admin only)"),
+        BotCommand("force_stop", "Force stop user VM (Admin only)"),
+        BotCommand("maintenance", "Toggle maintenance mode (Admin only)"),
+        BotCommand("allow_user", "Add user to whitelist (Admin only)"),
+        BotCommand("remove_user", "Remove user from whitelist (Admin only)"),
+        BotCommand("list_allowed", "List allowed users (Admin only)"),
+        BotCommand("force_destroy", "Force destroy user VM (Admin only)")
+    ]
+
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.bot.set_my_commands(commands))
+        logger.info("Bot commands registered successfully")
+    except Exception as e:
+        logger.error(f"Failed to register bot commands: {e}")
+
     # Handlers
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('create', create_vm))
@@ -484,6 +592,9 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('force_stop', force_stop))
     application.add_handler(CommandHandler('maintenance', maintenance))
     application.add_handler(CommandHandler('force_destroy', force_destroy))
+    application.add_handler(CommandHandler('allow_user', allow_user))
+    application.add_handler(CommandHandler('remove_user', remove_user))
+    application.add_handler(CommandHandler('list_allowed', list_allowed))
 
     logger.info("Bot is running...")
     application.run_polling()

@@ -44,7 +44,17 @@ async def init_db():
                 status TEXT
             )
         """)
-        
+
+        # Create allowed_users table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS allowed_users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                added_by INTEGER,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         await db.commit()
     logger.info("Database initialized.")
 
@@ -100,5 +110,37 @@ async def get_all_containers():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM containers") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+# --- Allowed Users Management ---
+
+async def add_allowed_user(user_id, username=None, added_by=None):
+    """Add a user to the allowed users list."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO allowed_users (user_id, username, added_by)
+            VALUES (?, ?, ?)
+        """, (user_id, username, added_by))
+        await db.commit()
+
+async def remove_allowed_user(user_id):
+    """Remove a user from the allowed users list."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM allowed_users WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+async def is_user_allowed(user_id):
+    """Check if a user is in the allowed users list."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM allowed_users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
+
+async def get_allowed_users():
+    """Get all allowed users."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM allowed_users ORDER BY added_at DESC") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
