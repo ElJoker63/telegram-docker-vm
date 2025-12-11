@@ -201,25 +201,47 @@ async def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
             else:
                 logger.info("ttyd installed from repository")
 
-            # Check if cloudflared is already available (pre-installed in Docker image)
-            logger.info("Checking cloudflared availability...")
-            exit_code, output = container.exec_run("which cloudflared", user='root')
-            if exit_code == 0:
-                logger.info("cloudflared is already available in container")
+            # Ensure cloudflared is available - copy from pre-installed location or install
+            logger.info("Ensuring cloudflared availability...")
+
+            # First try to copy from the pre-installed location
+            exit_code1, output1 = container.exec_run("cp /usr/bin/cloudflared /usr/local/bin/cloudflared 2>/dev/null && chmod +x /usr/local/bin/cloudflared 2>/dev/null || echo 'copy failed'", user='root')
+            copy_success = "copy failed" not in safe_decode(output1)
+
+            if copy_success:
+                logger.info("cloudflared copied from pre-installed location")
             else:
-                logger.warning("cloudflared not found, attempting installation...")
-                # Try to install if not available
-                exit_code2, output2 = container.exec_run("apt-get update && apt-get install -y cloudflared", user='root')
-                if exit_code2 == 0:
-                    logger.info("cloudflared installed successfully via apt")
-                else:
-                    logger.warning(f"apt installation failed: {safe_decode(output2)}")
-                    # Create dummy script as fallback
-                    container.exec_run(
-                        'mkdir -p /usr/local/bin && echo "#!/bin/bash\necho \"Web terminal not available: cloudflared could not be installed\"\nexit 1" > /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared',
-                        user='root'
-                    )
-                    logger.warning("Created dummy cloudflared script")
+                logger.warning("Pre-installed cloudflared not found, installing...")
+                # Install via apt if copy failed
+                commands = [
+                    ("apt-get update", "Updating package lists"),
+                    ("apt-get install -y cloudflared", "Installing cloudflared")
+                ]
+
+                installation_successful = True
+                for cmd, description in commands:
+                    logger.info(f"{description}...")
+                    exit_code, output = container.exec_run(cmd, user='root')
+                    if exit_code != 0:
+                        logger.warning(f"{description} failed: {safe_decode(output)}")
+                        installation_successful = False
+                        break
+
+                if not installation_successful:
+                    logger.warning("apt installation failed, trying direct download...")
+                    # Try direct download as last resort
+                    wget_cmd = "sh -c 'wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared'"
+                    exit_code, output = container.exec_run(wget_cmd, user='root')
+                    if exit_code == 0:
+                        logger.info("cloudflared installed successfully via direct download")
+                    else:
+                        logger.warning(f"Direct download failed: {safe_decode(output)}")
+                        # Create dummy script as final fallback
+                        container.exec_run(
+                            'mkdir -p /usr/local/bin && echo "#!/bin/bash\necho \"Web terminal not available: cloudflared could not be installed\"\nexit 1" > /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared',
+                            user='root'
+                        )
+                        logger.warning("Created dummy cloudflared script")
 
             # Verify installations
             exit_code, output = container.exec_run("which ttyd", user='root')
@@ -322,9 +344,10 @@ async def start_web_ssh_tunnel(container_id):
         if exit_code != 0:
             return "Web terminal not available: ttyd not installed in container"
 
-        exit_code, _ = container.exec_run("which cloudflared", user='root')
+        # Check cloudflared in multiple locations
+        exit_code, _ = container.exec_run("which cloudflared || ls /usr/local/bin/cloudflared || ls /usr/bin/cloudflared", user='root')
         if exit_code != 0:
-            return "Web terminal not available: cloudflared not installed in container"
+            return "Web terminal not available: cloudflared not found in container"
 
         # 1. Start ttyd (if not already running)
         exit_code, _ = container.exec_run("pgrep ttyd", user='root')
@@ -352,12 +375,12 @@ async def start_web_ssh_tunnel(container_id):
 
         # 3. Start Cloudflare Tunnel
         # Kill existing tunnel if any
-        container.exec_run("pkill -f cloudflared", user='root')
+        container.exec_run("pkill -f /usr/local/bin/cloudflared", user='root')
         await asyncio.sleep(1)  # Wait for process to terminate
 
         # Start new tunnel pointing to ttyd (http://localhost:7681)
         # Use unauthenticated quick tunnel for simplicity and reliability
-        cmd = "nohup cloudflared tunnel --url http://localhost:7681 > /tmp/cloudflared.log 2>&1 &"
+        cmd = "nohup /usr/local/bin/cloudflared tunnel --url http://localhost:7681 > /tmp/cloudflared.log 2>&1 &"
         logger.info("Starting Cloudflare quick tunnel")
 
         container.exec_run(f"sh -c '{cmd}'", detach=True, user='root')
@@ -402,7 +425,7 @@ async def start_web_ssh_tunnel(container_id):
                     logger.warning(f"Cloudflared error detected: {log}")
 
                 # Check if cloudflared process is still running
-                exit_code, _ = container.exec_run("pgrep -f cloudflared", user='root')
+                exit_code, _ = container.exec_run("pgrep -f /usr/local/bin/cloudflared", user='root')
                 if exit_code != 0:
                     logger.error("Cloudflared process has terminated unexpectedly")
                     break
