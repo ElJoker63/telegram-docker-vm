@@ -17,7 +17,8 @@ try:
     client.ping() # Verify connection
     logger.info("Successfully connected to Docker daemon.")
 except Exception as e:
-    logger.error(f"Failed to connect to Docker: {e}")
+    logger.warning(f"Docker not available: {e}")
+    logger.warning("Running in limited mode without Docker functionality.")
     client = None
 
 IMAGE_NAME = "telegram-vm-bot:latest"

@@ -429,11 +429,14 @@ if __name__ == '__main__':
     asyncio.set_event_loop(loop)
     loop.run_until_complete(db.init_db())
     
-    # Build Docker Image
+    # Build Docker Image (skip if Docker is not available)
     logger.info("Checking Docker image...")
-    if not docker.build_image():
-        logger.error("Failed to build Docker image. Exiting.")
-        exit(1)
+    try:
+        if not docker.build_image():
+            logger.warning("Docker image build skipped or failed. Continuing without it.")
+    except Exception as e:
+        logger.warning(f"Docker not available or image build failed: {e}")
+        logger.warning("Continuing without Docker image build. Some features may be limited.")
 
     application = ApplicationBuilder().token(TOKEN).build()
 
