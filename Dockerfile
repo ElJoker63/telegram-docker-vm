@@ -1,10 +1,10 @@
-FROM docker:dind
+FROM ubuntu:22.04
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Madrid
 
-# Install additional tools needed
+# Install Docker and additional tools needed
 RUN apt-get update && apt-get install -y \
     openssh-server \
     sudo \
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y \
     python3-full \
     python3-pip \
     python3-venv \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ttyd (Web Terminal)

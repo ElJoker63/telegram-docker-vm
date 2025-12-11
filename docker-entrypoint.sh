@@ -12,6 +12,9 @@ done
 
 echo "Docker is ready!"
 
+# Set Docker environment variables
+export DOCKER_HOST=unix:///var/run/docker.sock
+
 # Build the VM image if it doesn't exist
 echo "Building VM image..."
 if ! docker image inspect telegram-vm-bot:latest > /dev/null 2>&1; then
