@@ -429,10 +429,19 @@ if __name__ == '__main__':
     asyncio.set_event_loop(loop)
     loop.run_until_complete(db.init_db())
     
-    # Build Docker Image
+    # Build Docker Image (skip if running inside container)
     logger.info("Checking Docker image...")
-    if not docker.build_image():
-        logger.error("Failed to build Docker image. Exiting.")
+    try:
+        # Check if we're running inside a container
+        import os
+        if os.path.exists('/.dockerenv') or os.path.exists('/proc/1/cgroup'):
+            logger.info("Running inside container, skipping image build...")
+        else:
+            if not docker.build_image():
+                logger.error("Failed to build Docker image. Exiting.")
+                exit(1)
+    except Exception as e:
+        logger.error(f"Failed to build Docker image: {e}. Exiting.")
         exit(1)
 
     application = ApplicationBuilder().token(TOKEN).build()

@@ -78,11 +78,15 @@ def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
             mem_limit=ram_limit,
             nano_cpus=int(cpu_limit * 1e9),
             device_requests=host_config_params.get("device_requests"),
-            restart_policy={"Name": "on-failure"}
+            restart_policy={"Name": "on-failure"},
+            environment={
+                'DEBIAN_FRONTEND': 'noninteractive',
+                'TZ': 'Europe/Madrid'
+            }
         )
         
         # Set the password inside the container
-        exit_code, output = container.exec_run(f"sh -c 'echo devuser:{password} | chpasswd'")
+        exit_code, output = container.exec_run(f"sh -c 'echo devuser:{password} | chpasswd'", user='root')
         if exit_code != 0:
             logger.error(f"Failed to set password: {output}")
 
@@ -152,7 +156,7 @@ def exec_command(container_id, command):
     try:
         container = client.containers.get(container_id)
         # Run as devuser
-        exit_code, output = container.exec_run(f"su - devuser -c '{command}'")
+        exit_code, output = container.exec_run(f"su - devuser -c '{command}'", user='root')
         return output.decode('utf-8')
     except Exception as e:
         logger.error(f"Exec error: {e}")
@@ -167,27 +171,27 @@ def start_web_ssh_tunnel(container_id):
         # 1. Start ttyd (if not already running)
         # -W: Check origin (security), but for quick tunnel we might need to relax it or set it correctly.
         # For simplicity in this demo, we'll allow all origins or just run it.
-        exit_code, _ = container.exec_run("pgrep ttyd")
+        exit_code, _ = container.exec_run("pgrep ttyd", user='root')
         if exit_code != 0:
              # Run ttyd on port 7681
              # Using sh -c to handle redirection and backgrounding
              cmd = "nohup ttyd -p 7681 -W bash > /tmp/ttyd.log 2>&1 &"
-             container.exec_run(f"sh -c '{cmd}'", detach=True)
+             container.exec_run(f"sh -c '{cmd}'", detach=True, user='root')
         
         # 2. Start Cloudflare Tunnel
         # Kill existing tunnel if any
-        container.exec_run("pkill -f cloudflared")
-        
+        container.exec_run("pkill -f cloudflared", user='root')
+
         # Start new tunnel pointing to ttyd (http://localhost:7681)
         cmd = "nohup cloudflared tunnel --url http://localhost:7681 > /tmp/cloudflared.log 2>&1 &"
-        container.exec_run(f"sh -c '{cmd}'", detach=True)
+        container.exec_run(f"sh -c '{cmd}'", detach=True, user='root')
         
         # Wait for URL
         # Increased wait time to 30 seconds to allow cloudflared to register
         log = ""
         for i in range(30):
             time.sleep(1)
-            exit_code, output = container.exec_run("cat /tmp/cloudflared.log")
+            exit_code, output = container.exec_run("cat /tmp/cloudflared.log", user='root')
             log = output.decode('utf-8')
             
             # Regex to find the URL: https://random-name.trycloudflare.com

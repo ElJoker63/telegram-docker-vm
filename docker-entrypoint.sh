@@ -7,7 +7,7 @@ export PATH=$PATH:/usr/bin
 
 # Create runtime directory if it doesn't exist
 mkdir -p ${XDG_RUNTIME_DIR}
-chown devuser:devuser ${XDG_RUNTIME_DIR}
+chown devuser ${XDG_RUNTIME_DIR}
 
 # Start Docker rootless daemon with minimal configuration for Coolify
 echo "Starting Docker rootless daemon..."
@@ -29,6 +29,15 @@ fi
 
 echo "Starting Telegram bot..."
 cd /app
+
+# Set proper environment variables for the bot
+export TELEGRAM_BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN .env | cut -d '=' -f2)
+export ADMIN_USER_ID=$(grep ADMIN_USER_ID .env | cut -d '=' -f2)
+export PYTHONUNBUFFERED=1
+
+# Debug: Show environment variables
+echo "TELEGRAM_BOT_TOKEN set to: $TELEGRAM_BOT_TOKEN"
+echo "ADMIN_USER_ID set to: $ADMIN_USER_ID"
 
 # Run as devuser (UID 1000) which is the rootless Docker user
 exec gosu devuser python3 src/bot.py
