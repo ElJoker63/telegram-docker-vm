@@ -43,5 +43,17 @@ RUN echo 'devuser:password' | chpasswd
 
 EXPOSE 22
 
-#CMD ["/usr/sbin/sshd", "-D"]
+# Set working directory
+WORKDIR /app
+
+# Copy all project files
+COPY . /app
+
+# Install Python dependencies
+RUN pip3 install -r requirements.txt
+
+# Create data directory for database
+RUN mkdir -p /app/data
+
+# Correct CMD to run the bot
 CMD ["python3", "src/bot.py"]
