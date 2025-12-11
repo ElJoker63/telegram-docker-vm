@@ -56,10 +56,7 @@ RUN wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/c
 # Configure SSH
 RUN mkdir /var/run/sshd
 
-# Create a user 'devuser' with sudo privileges
-RUN useradd -rm -d /home/devuser -s /bin/bash -g root -G sudo -u 1000 devuser 
-
-# Set default password (will be overridden by the bot)
+# Set default password for devuser (will be overridden by the bot)
 RUN echo 'devuser:password' | chpasswd
 
 EXPOSE 22
