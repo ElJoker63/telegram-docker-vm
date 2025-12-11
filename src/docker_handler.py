@@ -21,7 +21,7 @@ except Exception as e:
     logger.warning("Running in limited mode without Docker functionality.")
     client = None
 
-IMAGE_NAME = "telegram-vm-bot:latest"
+IMAGE_NAME = "ubuntu:22.04"
 
 def build_image():
     """Build the Docker image if it doesn't exist."""
@@ -82,13 +82,37 @@ def create_container(user_id, gpu_enabled, ram_limit, cpu_limit):
             environment={
                 'DEBIAN_FRONTEND': 'noninteractive',
                 'TZ': 'Europe/Madrid'
-            }
+            },
+            command="sleep infinity"  # Keep container running
         )
         
-        # Set the password inside the container
-        exit_code, output = container.exec_run(f"sh -c 'echo devuser:{password} | chpasswd'", user='root')
-        if exit_code != 0:
-            logger.error(f"Failed to set password: {output}")
+        # Wait for container to be fully running
+        container.reload()
+        max_attempts = 10
+        attempt = 0
+
+        while attempt < max_attempts:
+            try:
+                # Check if container is running
+                container.reload()
+                if container.status == 'running':
+                    # Set the password inside the container
+                    exit_code, output = container.exec_run(f"sh -c 'echo devuser:{password} | chpasswd'", user='root')
+                    if exit_code != 0:
+                        logger.error(f"Failed to set password: {output}")
+                    break
+                else:
+                    time.sleep(1)
+                    attempt += 1
+            except Exception as e:
+                logger.warning(f"Container not ready yet, retrying... ({attempt}/{max_attempts}): {e}")
+                time.sleep(1)
+                attempt += 1
+
+        if attempt >= max_attempts:
+            logger.error("Container failed to start within the expected time")
+            container.remove(force=True)
+            raise Exception("Container failed to start")
 
         # Get assigned port
         container.reload()
@@ -155,8 +179,8 @@ def exec_command(container_id, command):
     if not client: return "Docker client not initialized"
     try:
         container = client.containers.get(container_id)
-        # Run as devuser
-        exit_code, output = container.exec_run(f"su - devuser -c '{command}'", user='root')
+        # Run as root (devuser may not exist in basic containers)
+        exit_code, output = container.exec_run(f"bash -c '{command}'", user='root')
         return output.decode('utf-8')
     except Exception as e:
         logger.error(f"Exec error: {e}")

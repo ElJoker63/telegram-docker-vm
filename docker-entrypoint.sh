@@ -27,6 +27,10 @@ if ! docker image inspect telegram-vm-bot:latest > /dev/null 2>&1; then
     docker build -t telegram-vm-bot:latest -f /app/Dockerfile .
 fi
 
+# Pre-load required Docker images for VM creation
+echo "Pre-loading required Docker images..."
+docker pull ubuntu:22.04
+
 echo "Starting Telegram bot..."
 cd /app
 

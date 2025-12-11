@@ -107,7 +107,27 @@ async def create_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Create VM failed: {e}")
-        await update.message.reply_text(f"❌ Failed to create VM: {str(e)}")
+        error_msg = str(e)
+        if "unshare: operation not permitted" in error_msg:
+            await update.message.reply_text(
+                "❌ **Docker Container Creation Failed**\n\n"
+                "This bot is running in a restricted Docker environment that cannot create nested containers. "
+                "The rootless Docker setup inside the container has limitations that prevent VM creation.\n\n"
+                "This is a known limitation when running Docker-in-Docker (DinD) with rootless containers. "
+                "The bot can manage existing containers but cannot create new ones in this configuration."
+            )
+        elif "No such image" in error_msg or "pull access denied" in error_msg:
+            await update.message.reply_text(
+                "❌ **Docker Image Not Available**\n\n"
+                "The bot cannot create VMs because the required Docker images are not available in this environment. "
+                "This is a limitation of the rootless Docker setup inside the container - it cannot pull images from Docker Hub.\n\n"
+                "To use this bot for creating VMs, you would need to:\n"
+                "1. Run it outside of a container, or\n"
+                "2. Pre-load the required Docker images into the container\n\n"
+                "The bot can still manage existing containers if they were created externally."
+            )
+        else:
+            await update.message.reply_text(f"❌ Failed to create VM: {str(e)}")
 
 async def status_vm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
