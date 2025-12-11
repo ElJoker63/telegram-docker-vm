@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Start Docker daemon in the background
-echo "Starting Docker daemon..."
-dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 &
+# Start Docker rootless daemon in the background
+echo "Starting Docker rootless daemon..."
+/usr/local/bin/dockerd-rootless.sh --experimental --storage-driver=vfs &
 
 # Wait for Docker to be ready
 echo "Waiting for Docker to initialize..."
@@ -12,8 +12,9 @@ done
 
 echo "Docker is ready!"
 
-# Set Docker environment variables
-export DOCKER_HOST=unix:///var/run/docker.sock
+# Set Docker environment variables for rootless
+export DOCKER_HOST=unix:///run/user/1000/docker.sock
+export XDG_RUNTIME_DIR=/run/user/1000
 
 # Build the VM image if it doesn't exist
 echo "Building VM image..."
@@ -24,9 +25,5 @@ fi
 echo "Starting Telegram bot..."
 cd /app
 
-# Change to a non-root user for security
-if id "devuser" &>/dev/null; then
-    exec gosu devuser python3 src/bot.py
-else
-    exec python3 src/bot.py
-fi
+# Run as devuser (UID 1000) which is the rootless Docker user
+exec gosu devuser python3 src/bot.py

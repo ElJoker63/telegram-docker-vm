@@ -1,10 +1,10 @@
-FROM ubuntu:22.04
+FROM docker:24.0.7-dind-rootless
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Madrid
 
-# Install Docker and additional tools needed
+# Install additional tools needed (rootless Docker already includes docker)
 RUN apt-get update && apt-get install -y \
     openssh-server \
     sudo \
@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y \
     python3-full \
     python3-pip \
     python3-venv \
-    docker.io \
     gosu \
     && rm -rf /var/lib/apt/lists/*
 
